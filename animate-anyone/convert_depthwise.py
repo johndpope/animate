@@ -22,10 +22,16 @@ from diffusers.models import UNet2DConditionModel, Transformer2DModel
 from einops import rearrange
 from xformers.ops import memory_efficient_attention
 from models.motionmodule import get_motion_module
+import tensorboard
+from torch.utils.tensorboard import SummaryWriter
 
 
 torch.manual_seed(17)
 
+import pkg_resources
+
+for entry_point in pkg_resources.iter_entry_points('tensorboard_plugins'):
+    print("tensorboard_plugins:",entry_point.dist)
 
 class InflatedGroupNorm(nn.GroupNorm):
     def forward(self, x):
@@ -106,6 +112,7 @@ class VideoNet(nn.Module):
 
     # forward pass just passes pose + conditioning embeddings to unet and returns activations
     def forward(self, intial_noise, timesteps, reference_embeddings, clip_condition_embeddings, skip_temporal_attn=False):
+
         # update the reference tensors for the ReferenceConditionedResNet modules
         self.update_reference_embeddings(reference_embeddings)
 
@@ -203,71 +210,6 @@ class SpatialAttentionModule(nn.Module):
 
         # return sliced out with x as adding residual before reshape would be the same as adding x
         return out + x
-# class SpatialAttentionModule(nn.Module):
-#     def __init__(self, num_inp_channels: int, embed_dim: int = 40, num_heads: int = 8) -> None:
-#         super(SpatialAttentionModule, self).__init__()
-
-#         self.num_inp_channels = num_inp_channels
-#         self.embed_dim = embed_dim
-#         self.num_heads = num_heads
-
-#           # create input projection layers
-#         self.norm_in = InflatedGroupNorm(num_groups=32, num_channels=num_inp_channels, eps=1e-6, affine=True)
-#         self.proj_in = DepthwiseSeparableInflatedConv3d(InflatedConv3d(num_inp_channels, num_inp_channels, kernel_size=1, stride=1, padding=0))
-
-#         # create multiheaded attention module
-#         self.to_q = nn.Linear(num_inp_channels, embed_dim)
-#         self.to_k = nn.Linear(num_inp_channels, embed_dim)
-#         self.to_v = nn.Linear(num_inp_channels, embed_dim)
-#         self.norm1 = nn.LayerNorm(embed_dim)
-#         self.ffn = nn.Linear(embed_dim, embed_dim)
-#         self.norm2 = nn.LayerNorm(embed_dim)
-
-#         # create output projection layer
-#         self.proj_out = DepthwiseSeparableInflatedConv3d(InflatedConv3d(num_inp_channels, num_inp_channels, kernel_size=1, stride=1, padding=0))
-
-
- 
-#     # forward passes the activation through a spatial attention module
-#     def forward(self, x, reference_tensor):
-#         # expand and concat x with reference embedding where x is [b*t,c,h,w]
-#         orig_w = x.shape[3]
-#         concat = torch.cat((x, reference_tensor), axis=3)
-#         h, w = concat.shape[2], concat.shape[3]
-
-#         # pass data through input projections
-#         proj_x = self.norm_in(concat)
-#         proj_x = self.proj_in(proj_x)
-
-#         # re-arrange data from (b*t,c,h,w) to correct groupings to [b*t,w*h,c]
-#         grouped_x = rearrange(proj_x, 'bt c h w -> bt (h w) c')
-#         reshaped_x = rearrange(x, 'bt c h w -> bt (h w) c')
-
-#         # compute self-attention on the concatenated data along w dimension
-#         q, k, v = self.to_q(reshaped_x), self.to_k(grouped_x), self.to_v(grouped_x)
-
-#         # split embeddings for multi-headed attention
-#         q = rearrange(q, 'bt (h w) (n d) -> bt (h w) n d', h=x.shape[2], w=x.shape[3], n=self.num_heads)
-#         k = rearrange(k, 'bt (h w) (n d) -> bt (h w) n d', h=h, w=w, n=self.num_heads)
-#         v = rearrange(v, 'bt (h w) (n d) -> bt (h w) n d', h=h, w=w, n=self.num_heads)
-
-#         # run attention calculation
-#         attn_out = memory_efficient_attention(q, k, v)
-#         # reshape from multihead
-#         attn_out = rearrange(attn_out, 'bt (h w) n d -> bt (h w) (n d)', h=x.shape[2], w=x.shape[3], n=self.num_heads)
-        
-#         norm1_out = self.norm1(attn_out + reshaped_x)
-#         ffn_out = self.ffn(norm1_out)
-#         attn_out = self.norm2(norm1_out + ffn_out)
-
-#         # re-arrange data from (b*t,w*h,c) to (b*t,c,h,w)
-#         attn_out = rearrange(attn_out, 'bt (h w) c -> bt c h w', h=x.shape[2], w=x.shape[3])
-
-#         # pass output through out projection
-#         out = self.proj_out(attn_out)
-
-#         # return sliced out with x as adding residual before reshape would be the same as adding x
-#         return out + x
 
 
 # TemporalAttentionModule is a temporal attention module
@@ -296,6 +238,8 @@ class TemporalAttentionModule(nn.Module):
 
     # forward performs temporal attention on the input (b*t,c,h,w)
     def forward(self, x):
+        assert x.dim() == 4, "Input tensor x must be 4-dimensional (batch*time, channels, height, width)"
+    
         h, w = x.shape[2], x.shape[3]
 
         # pass data through input projections
@@ -362,60 +306,15 @@ class TemporalAttentionModule(nn.Module):
         return out + x
 
 
-# TemporalAttentionModule is a temporal attention module
-# class TemporalAttentionModule(nn.Module):
-#     def __init__(self, num_inp_channels: int, num_frames: int, embed_dim: int = 40, num_heads: int = 8) -> None:
-#         super(TemporalAttentionModule, self).__init__()
-
-#         self.num_inp_channels = num_inp_channels
-#         self.num_frames = num_frames
-#         self.embed_dim = embed_dim
-
-#         # create input projection layers
-#         self.norm_in = InflatedGroupNorm(num_groups=32, num_channels=num_inp_channels, eps=1e-6, affine=True)
-#         self.proj_in = DepthwiseSeparableInflatedConv3d(InflatedConv3d(num_inp_channels, num_inp_channels, kernel_size=1, stride=1, padding=0))
-
-#         # create multiheaded attention module
-#         self.to_q = nn.Linear(num_inp_channels, embed_dim)
-#         self.to_k = nn.Linear(num_inp_channels, embed_dim)
-#         self.to_v = nn.Linear(num_inp_channels, embed_dim)
-#         self.norm1 = nn.LayerNorm(embed_dim)
-#         self.ffn = nn.Linear(embed_dim, embed_dim)
-#         self.norm2 = nn.LayerNorm(embed_dim)
-
-#         # create output projection layer
-#         self.proj_out = DepthwiseSeparableInflatedConv3d(InflatedConv3d(num_inp_channels, num_inp_channels, kernel_size=1, stride=1, padding=0))
-
-#     # forward performs temporal attention on the input (b*t,c,h,w)
-#     def forward(self, x):
-#         h, w = x.shape[2], x.shape[3]
-
-#         # pass data through input projections
-#         proj_x = self.norm_in(x)
-#         proj_x = self.proj_in(proj_x)
-
-#         # re-arrange data from (b*t,c,h,w) to correct groupings to (b*t,w*h,c)
-#         grouped_x = rearrange(x, '(b t) c h w -> (b h w) t c', t=self.num_frames)
-
-#         # perform self-attention on the grouped_x
-#         q, k, v = self.to_q(grouped_x), self.to_k(grouped_x), self.to_v(grouped_x)
-#         attn_out = memory_efficient_attention(q, k, v)
-#         norm1_out = self.norm1(attn_out + grouped_x)
-#         ffn_out = self.ffn(norm1_out)
-#         attn_out = self.norm2(norm1_out + ffn_out)
-
-#         # rearrange out to be back into the grouped batch and timestep format
-#         attn_out = rearrange(attn_out, '(b h w) t c -> (b t) c h w', t=self.num_frames, h=h, w=w)
-
-#         # pass attention output through out projection
-#         attn_out = self.proj_out(attn_out)
-
-#         return attn_out + x
-
 # ReferenceConditionedAttentionBlock is an attention block which performs spatial and temporal attention
 class ReferenceConditionedAttentionBlock(nn.Module):
     def __init__(self, cross_attn: Transformer2DModel, num_frames: int, skip_temporal_attn: bool = False):
         super(ReferenceConditionedAttentionBlock, self).__init__()
+
+
+        assert isinstance(cross_attn, Transformer2DModel), "cross_attn must be an instance of Transformer2DModel"
+        assert isinstance(num_frames, int) and num_frames > 0, "num_frames must be a positive integer"
+        assert isinstance(skip_temporal_attn, bool), "skip_temporal_attn must be a boolean"
 
         # store configurations and submodules
         self.skip_temporal_attn = skip_temporal_attn
@@ -508,10 +407,12 @@ class DepthwiseSeparableInflatedConv3d(nn.Module):
         x = self.depthwise_conv(x)
         x = self.pointwise_conv(x)
         return x
+
+        
 if __name__ == '__main__':
     num_frames = 8
 
-    num_channels_latent = 4
+
 
     vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-ema")
 
@@ -523,6 +424,8 @@ if __name__ == '__main__':
     
     video_net = VideoNet(pipe.unet, num_frames=num_frames).to("cuda")
 
+        
+  
     # load mm pretrained weights from animatediff
     load_mm(video_net, torch.load('/media/2TB/stable-diffusion-webui/extensions/sd-webui-animatediff/model/v3_sd15_mm.ckpt'))
 
@@ -530,16 +433,54 @@ if __name__ == '__main__':
     # Create an optimized model with DepthwiseSeparableInflatedConv3d layers
     optimized_model = copy.deepcopy(video_net)
 
-    # Replace InflatedConv3d layers with DepthwiseSeparableInflatedConv3d layers
-    for name, module in optimized_model.named_modules():
-        print(f"name:{name} layer:{module}")
-  
-            
+    for name, module in video_net.named_modules():
+        print(f" name:{name} layer:{module.__class__.__name__}")
+        if isinstance(module, InflatedGroupNorm):
+            print(f" Found InflatedGroupNorm at {name}")
         if isinstance(module, InflatedConv3d):
+            print(f"🪨 Found InflatedConv3d at {name}")
             inflated_conv3d_layer = getattr(video_net, name)
             depthwise_separable_conv3d_layer = DepthwiseSeparableInflatedConv3d(inflated_conv3d_layer)
             setattr(optimized_model, name, depthwise_separable_conv3d_layer)
             print("replacing layer....")
-    # Save the checkpoint of the optimized model (5.5 gb)
-    torch.save(video_net.state_dict(), "optimized.pth")
 
+    # Replace InflatedConv3d layers with DepthwiseSeparableInflatedConv3d layers
+    # for name, module in optimized_model.named_modules():
+    #     print(f"name:{name} layer:{module}")
+  
+            
+
+    # Save the checkpoint of the optimized model (5.5 gb)
+    # torch.save(video_net.state_dict(), "optimized.pth")
+
+
+
+    # Step 2: Initialize the TensorBoard SummaryWriter
+    # writer = SummaryWriter('runs/videonet_experiment')
+
+
+
+    # Assuming you have already loaded your model as `video_net`
+    # Step 3: Add model graph to TensorBoard
+    # Note: You may need to pass a sample input to `add_graph` depending on your model structure
+    # Here, `initial_noise` is a sample input tensor
+    # Get the correct number of latent dimensions from the model's configuration
+    # Get the correct number of latent dimensions from the model's configuration
+    # num_channels_latent = 4  # This should be verified from the model's configuration
+
+    # # Initial noise tensor should match the latent dimensions and the model's expected input size
+    # initial_noise = torch.randn(1, num_channels_latent, 512, 512).to(device)
+
+    # # Timestep tensor; the value might need to be adjusted based on how the diffusion model processes it
+    # timesteps = torch.tensor([1]).to(device)
+
+    # # Assuming reference_embeddings need to match the number of attention blocks in your VideoNet model
+    # n = len(video_net.ref_cond_attn_blocks)
+    # reference_embeddings = torch.randn(1, n, num_channels_latent, 512, 512).to(device)
+
+    # # Clip condition embeddings should match the latent dimensions and expected size
+    # clip_condition_embeddings = torch.randn(1, num_channels_latent, 512, 512).to(device)
+
+    # # You need to ensure the shapes and types match what your VideoNet model expects
+    # with torch.no_grad():
+    #     writer.add_graph(video_net, (initial_noise, timesteps, reference_embeddings, clip_condition_embeddings))
