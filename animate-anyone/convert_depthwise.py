@@ -140,69 +140,6 @@ def load_mm(video_net: VideoNet, mm_state_dict):
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # SpatialAttentionModule is a spatial attention module between reference and input
-# class SpatialAttentionModule(nn.Module):
-#     def __init__(self, num_inp_channels: int, embed_dim: int = 40, num_heads: int = 8) -> None:
-#         super(SpatialAttentionModule, self).__init__()
-
-#         self.num_inp_channels = num_inp_channels
-#         self.embed_dim = embed_dim
-#         self.num_heads = num_heads
-
-#         # create input projection layers
-#         self.norm_in = nn.GroupNorm(num_groups=32, num_channels=num_inp_channels, eps=1e-6, affine=True)
-#         self.proj_in = nn.Conv2d(num_inp_channels, num_inp_channels, kernel_size=1, stride=1, padding=0)
-
-#         # create multiheaded attention module
-#         self.to_q = nn.Linear(num_inp_channels, embed_dim)
-#         self.to_k = nn.Linear(num_inp_channels, embed_dim)
-#         self.to_v = nn.Linear(num_inp_channels, embed_dim)
-#         self.norm1 = nn.LayerNorm(embed_dim)
-#         self.ffn = nn.Linear(embed_dim, embed_dim)
-#         self.norm2 = nn.LayerNorm(embed_dim)
-
-#         # create output projection layer
-#         self.proj_out = nn.Conv2d(num_inp_channels, num_inp_channels, kernel_size=1, stride=1, padding=0)
-
-#     # forward passes the activation through a spatial attention module
-#     def forward(self, x, reference_tensor):
-#         # expand and concat x with reference embedding where x is [b*t,c,h,w]
-#         orig_w = x.shape[3]
-#         concat = torch.cat((x, reference_tensor), axis=3)
-#         h, w = concat.shape[2], concat.shape[3]
-
-#         # pass data through input projections
-#         proj_x = self.norm_in(concat)
-#         proj_x = self.proj_in(proj_x)
-
-#         # re-arrange data from (b*t,c,h,w) to correct groupings to [b*t,w*h,c]
-#         grouped_x = rearrange(proj_x, 'bt c h w -> bt (h w) c')
-#         reshaped_x = rearrange(x, 'bt c h w -> bt (h w) c')
-
-#         # compute self-attention on the concatenated data along w dimension
-#         q, k, v = self.to_q(reshaped_x), self.to_k(grouped_x), self.to_v(grouped_x)
-
-#         # split embeddings for multi-headed attention
-#         q = rearrange(q, 'bt (h w) (n d) -> bt (h w) n d', h=x.shape[2], w=x.shape[3], n=self.num_heads)
-#         k = rearrange(k, 'bt (h w) (n d) -> bt (h w) n d', h=h, w=w, n=self.num_heads)
-#         v = rearrange(v, 'bt (h w) (n d) -> bt (h w) n d', h=h, w=w, n=self.num_heads)
-
-#         # run attention calculation
-#         attn_out = memory_efficient_attention(q, k, v)
-#         # reshape from multihead
-#         attn_out = rearrange(attn_out, 'bt (h w) n d -> bt (h w) (n d)', h=x.shape[2], w=x.shape[3], n=self.num_heads)
-        
-#         norm1_out = self.norm1(attn_out + reshaped_x)
-#         ffn_out = self.ffn(norm1_out)
-#         attn_out = self.norm2(norm1_out + ffn_out)
-
-#         # re-arrange data from (b*t,w*h,c) to (b*t,c,h,w)
-#         attn_out = rearrange(attn_out, 'bt (h w) c -> bt c h w', h=x.shape[2], w=x.shape[3])
-
-#         # pass output through out projection
-#         out = self.proj_out(attn_out)
-
-#         # return sliced out with x as adding residual before reshape would be the same as adding x
-#         return out + x
 class SpatialAttentionModule(nn.Module):
     def __init__(self, num_inp_channels: int, embed_dim: int = 40, num_heads: int = 8) -> None:
         super(SpatialAttentionModule, self).__init__()
@@ -211,9 +148,9 @@ class SpatialAttentionModule(nn.Module):
         self.embed_dim = embed_dim
         self.num_heads = num_heads
 
-          # create input projection layers
-        self.norm_in = InflatedGroupNorm(num_groups=32, num_channels=num_inp_channels, eps=1e-6, affine=True)
-        self.proj_in = DepthwiseSeparableInflatedConv3d(InflatedConv3d(num_inp_channels, num_inp_channels, kernel_size=1, stride=1, padding=0))
+        # create input projection layers
+        self.norm_in = nn.GroupNorm(num_groups=32, num_channels=num_inp_channels, eps=1e-6, affine=True)
+        self.proj_in = nn.Conv2d(num_inp_channels, num_inp_channels, kernel_size=1, stride=1, padding=0)
 
         # create multiheaded attention module
         self.to_q = nn.Linear(num_inp_channels, embed_dim)
@@ -224,64 +161,59 @@ class SpatialAttentionModule(nn.Module):
         self.norm2 = nn.LayerNorm(embed_dim)
 
         # create output projection layer
-        self.proj_out = DepthwiseSeparableInflatedConv3d(InflatedConv3d(num_inp_channels, num_inp_channels, kernel_size=1, stride=1, padding=0))
+        self.proj_out = nn.Conv2d(num_inp_channels, num_inp_channels, kernel_size=1, stride=1, padding=0)
 
+    # forward passes the activation through a spatial attention module
+    def forward(self, x, reference_tensor):
+        # expand and concat x with reference embedding where x is [b*t,c,h,w]
+        orig_w = x.shape[3]
+        concat = torch.cat((x, reference_tensor), axis=3)
+        h, w = concat.shape[2], concat.shape[3]
 
- 
-#     # forward passes the activation through a spatial attention module
-#     def forward(self, x, reference_tensor):
-#         # expand and concat x with reference embedding where x is [b*t,c,h,w]
-#         orig_w = x.shape[3]
-#         concat = torch.cat((x, reference_tensor), axis=3)
-#         h, w = concat.shape[2], concat.shape[3]
+        # pass data through input projections
+        proj_x = self.norm_in(concat)
+        proj_x = self.proj_in(proj_x)
 
-#         # pass data through input projections
-#         proj_x = self.norm_in(concat)
-#         proj_x = self.proj_in(proj_x)
+        # re-arrange data from (b*t,c,h,w) to correct groupings to [b*t,w*h,c]
+        grouped_x = rearrange(proj_x, 'bt c h w -> bt (h w) c')
+        reshaped_x = rearrange(x, 'bt c h w -> bt (h w) c')
 
-#         # re-arrange data from (b*t,c,h,w) to correct groupings to [b*t,w*h,c]
-#         grouped_x = rearrange(proj_x, 'bt c h w -> bt (h w) c')
-#         reshaped_x = rearrange(x, 'bt c h w -> bt (h w) c')
+        # compute self-attention on the concatenated data along w dimension
+        q, k, v = self.to_q(reshaped_x), self.to_k(grouped_x), self.to_v(grouped_x)
 
-#         # compute self-attention on the concatenated data along w dimension
-#         q, k, v = self.to_q(reshaped_x), self.to_k(grouped_x), self.to_v(grouped_x)
+        # split embeddings for multi-headed attention
+        q = rearrange(q, 'bt (h w) (n d) -> bt (h w) n d', h=x.shape[2], w=x.shape[3], n=self.num_heads)
+        k = rearrange(k, 'bt (h w) (n d) -> bt (h w) n d', h=h, w=w, n=self.num_heads)
+        v = rearrange(v, 'bt (h w) (n d) -> bt (h w) n d', h=h, w=w, n=self.num_heads)
 
-#         # split embeddings for multi-headed attention
-#         q = rearrange(q, 'bt (h w) (n d) -> bt (h w) n d', h=x.shape[2], w=x.shape[3], n=self.num_heads)
-#         k = rearrange(k, 'bt (h w) (n d) -> bt (h w) n d', h=h, w=w, n=self.num_heads)
-#         v = rearrange(v, 'bt (h w) (n d) -> bt (h w) n d', h=h, w=w, n=self.num_heads)
-
-#         # run attention calculation
-#         attn_out = memory_efficient_attention(q, k, v)
-#         # reshape from multihead
-#         attn_out = rearrange(attn_out, 'bt (h w) n d -> bt (h w) (n d)', h=x.shape[2], w=x.shape[3], n=self.num_heads)
+        # run attention calculation
+        attn_out = memory_efficient_attention(q, k, v)
+        # reshape from multihead
+        attn_out = rearrange(attn_out, 'bt (h w) n d -> bt (h w) (n d)', h=x.shape[2], w=x.shape[3], n=self.num_heads)
         
-#         norm1_out = self.norm1(attn_out + reshaped_x)
-#         ffn_out = self.ffn(norm1_out)
-#         attn_out = self.norm2(norm1_out + ffn_out)
+        norm1_out = self.norm1(attn_out + reshaped_x)
+        ffn_out = self.ffn(norm1_out)
+        attn_out = self.norm2(norm1_out + ffn_out)
 
-#         # re-arrange data from (b*t,w*h,c) to (b*t,c,h,w)
-#         attn_out = rearrange(attn_out, 'bt (h w) c -> bt c h w', h=x.shape[2], w=x.shape[3])
+        # re-arrange data from (b*t,w*h,c) to (b*t,c,h,w)
+        attn_out = rearrange(attn_out, 'bt (h w) c -> bt c h w', h=x.shape[2], w=x.shape[3])
 
-#         # pass output through out projection
-#         out = self.proj_out(attn_out)
+        # pass output through out projection
+        out = self.proj_out(attn_out)
 
-#         # return sliced out with x as adding residual before reshape would be the same as adding x
-#         return out + x
-
-
-# # TemporalAttentionModule is a temporal attention module
-# class TemporalAttentionModule(nn.Module):
-#     def __init__(self, num_inp_channels: int, num_frames: int, embed_dim: int = 40, num_heads: int = 8) -> None:
-#         super(TemporalAttentionModule, self).__init__()
+        # return sliced out with x as adding residual before reshape would be the same as adding x
+        return out + x
+# class SpatialAttentionModule(nn.Module):
+#     def __init__(self, num_inp_channels: int, embed_dim: int = 40, num_heads: int = 8) -> None:
+#         super(SpatialAttentionModule, self).__init__()
 
 #         self.num_inp_channels = num_inp_channels
-#         self.num_frames = num_frames
 #         self.embed_dim = embed_dim
+#         self.num_heads = num_heads
 
-#         # create input projection layers
-#         self.norm_in = nn.GroupNorm(num_groups=32, num_channels=num_inp_channels, eps=1e-6, affine=True)
-#         self.proj_in = nn.Conv2d(num_inp_channels, num_inp_channels, kernel_size=1, stride=1, padding=0)
+#           # create input projection layers
+#         self.norm_in = InflatedGroupNorm(num_groups=32, num_channels=num_inp_channels, eps=1e-6, affine=True)
+#         self.proj_in = DepthwiseSeparableInflatedConv3d(InflatedConv3d(num_inp_channels, num_inp_channels, kernel_size=1, stride=1, padding=0))
 
 #         # create multiheaded attention module
 #         self.to_q = nn.Linear(num_inp_channels, embed_dim)
@@ -292,34 +224,10 @@ class SpatialAttentionModule(nn.Module):
 #         self.norm2 = nn.LayerNorm(embed_dim)
 
 #         # create output projection layer
-#         self.proj_out = nn.Conv2d(num_inp_channels, num_inp_channels, kernel_size=1, stride=1, padding=0)
+#         self.proj_out = DepthwiseSeparableInflatedConv3d(InflatedConv3d(num_inp_channels, num_inp_channels, kernel_size=1, stride=1, padding=0))
 
-#     # forward performs temporal attention on the input (b*t,c,h,w)
-#     def forward(self, x):
-#         h, w = x.shape[2], x.shape[3]
 
-#         # pass data through input projections
-#         proj_x = self.norm_in(x)
-#         proj_x = self.proj_in(proj_x)
-
-#         # re-arrange data from (b*t,c,h,w) to correct groupings to (b*t,w*h,c)
-#         grouped_x = rearrange(x, '(b t) c h w -> (b h w) t c', t=self.num_frames)
-
-#         # perform self-attention on the grouped_x
-#         q, k, v = self.to_q(grouped_x), self.to_k(grouped_x), self.to_v(grouped_x)
-#         attn_out = memory_efficient_attention(q, k, v)
-#         norm1_out = self.norm1(attn_out + grouped_x)
-#         ffn_out = self.ffn(norm1_out)
-#         attn_out = self.norm2(norm1_out + ffn_out)
-
-#         # rearrange out to be back into the grouped batch and timestep format
-#         attn_out = rearrange(attn_out, '(b h w) t c -> (b t) c h w', t=self.num_frames, h=h, w=w)
-
-#         # pass attention output through out projection
-#         attn_out = self.proj_out(attn_out)
-
-#         return attn_out + x
-
+ 
 #     # forward passes the activation through a spatial attention module
 #     def forward(self, x, reference_tensor):
 #         # expand and concat x with reference embedding where x is [b*t,c,h,w]
@@ -372,8 +280,8 @@ class TemporalAttentionModule(nn.Module):
         self.embed_dim = embed_dim
 
         # create input projection layers
-        self.norm_in = InflatedGroupNorm(num_groups=32, num_channels=num_inp_channels, eps=1e-6, affine=True)
-        self.proj_in = DepthwiseSeparableInflatedConv3d(InflatedConv3d(num_inp_channels, num_inp_channels, kernel_size=1, stride=1, padding=0))
+        self.norm_in = nn.GroupNorm(num_groups=32, num_channels=num_inp_channels, eps=1e-6, affine=True)
+        self.proj_in = nn.Conv2d(num_inp_channels, num_inp_channels, kernel_size=1, stride=1, padding=0)
 
         # create multiheaded attention module
         self.to_q = nn.Linear(num_inp_channels, embed_dim)
@@ -384,7 +292,7 @@ class TemporalAttentionModule(nn.Module):
         self.norm2 = nn.LayerNorm(embed_dim)
 
         # create output projection layer
-        self.proj_out = DepthwiseSeparableInflatedConv3d(InflatedConv3d(num_inp_channels, num_inp_channels, kernel_size=1, stride=1, padding=0))
+        self.proj_out = nn.Conv2d(num_inp_channels, num_inp_channels, kernel_size=1, stride=1, padding=0)
 
     # forward performs temporal attention on the input (b*t,c,h,w)
     def forward(self, x):
@@ -411,6 +319,98 @@ class TemporalAttentionModule(nn.Module):
         attn_out = self.proj_out(attn_out)
 
         return attn_out + x
+
+    # forward passes the activation through a spatial attention module
+    def forward(self, x, reference_tensor):
+        # expand and concat x with reference embedding where x is [b*t,c,h,w]
+        orig_w = x.shape[3]
+        concat = torch.cat((x, reference_tensor), axis=3)
+        h, w = concat.shape[2], concat.shape[3]
+
+        # pass data through input projections
+        proj_x = self.norm_in(concat)
+        proj_x = self.proj_in(proj_x)
+
+        # re-arrange data from (b*t,c,h,w) to correct groupings to [b*t,w*h,c]
+        grouped_x = rearrange(proj_x, 'bt c h w -> bt (h w) c')
+        reshaped_x = rearrange(x, 'bt c h w -> bt (h w) c')
+
+        # compute self-attention on the concatenated data along w dimension
+        q, k, v = self.to_q(reshaped_x), self.to_k(grouped_x), self.to_v(grouped_x)
+
+        # split embeddings for multi-headed attention
+        q = rearrange(q, 'bt (h w) (n d) -> bt (h w) n d', h=x.shape[2], w=x.shape[3], n=self.num_heads)
+        k = rearrange(k, 'bt (h w) (n d) -> bt (h w) n d', h=h, w=w, n=self.num_heads)
+        v = rearrange(v, 'bt (h w) (n d) -> bt (h w) n d', h=h, w=w, n=self.num_heads)
+
+        # run attention calculation
+        attn_out = memory_efficient_attention(q, k, v)
+        # reshape from multihead
+        attn_out = rearrange(attn_out, 'bt (h w) n d -> bt (h w) (n d)', h=x.shape[2], w=x.shape[3], n=self.num_heads)
+        
+        norm1_out = self.norm1(attn_out + reshaped_x)
+        ffn_out = self.ffn(norm1_out)
+        attn_out = self.norm2(norm1_out + ffn_out)
+
+        # re-arrange data from (b*t,w*h,c) to (b*t,c,h,w)
+        attn_out = rearrange(attn_out, 'bt (h w) c -> bt c h w', h=x.shape[2], w=x.shape[3])
+
+        # pass output through out projection
+        out = self.proj_out(attn_out)
+
+        # return sliced out with x as adding residual before reshape would be the same as adding x
+        return out + x
+
+
+# TemporalAttentionModule is a temporal attention module
+# class TemporalAttentionModule(nn.Module):
+#     def __init__(self, num_inp_channels: int, num_frames: int, embed_dim: int = 40, num_heads: int = 8) -> None:
+#         super(TemporalAttentionModule, self).__init__()
+
+#         self.num_inp_channels = num_inp_channels
+#         self.num_frames = num_frames
+#         self.embed_dim = embed_dim
+
+#         # create input projection layers
+#         self.norm_in = InflatedGroupNorm(num_groups=32, num_channels=num_inp_channels, eps=1e-6, affine=True)
+#         self.proj_in = DepthwiseSeparableInflatedConv3d(InflatedConv3d(num_inp_channels, num_inp_channels, kernel_size=1, stride=1, padding=0))
+
+#         # create multiheaded attention module
+#         self.to_q = nn.Linear(num_inp_channels, embed_dim)
+#         self.to_k = nn.Linear(num_inp_channels, embed_dim)
+#         self.to_v = nn.Linear(num_inp_channels, embed_dim)
+#         self.norm1 = nn.LayerNorm(embed_dim)
+#         self.ffn = nn.Linear(embed_dim, embed_dim)
+#         self.norm2 = nn.LayerNorm(embed_dim)
+
+#         # create output projection layer
+#         self.proj_out = DepthwiseSeparableInflatedConv3d(InflatedConv3d(num_inp_channels, num_inp_channels, kernel_size=1, stride=1, padding=0))
+
+#     # forward performs temporal attention on the input (b*t,c,h,w)
+#     def forward(self, x):
+#         h, w = x.shape[2], x.shape[3]
+
+#         # pass data through input projections
+#         proj_x = self.norm_in(x)
+#         proj_x = self.proj_in(proj_x)
+
+#         # re-arrange data from (b*t,c,h,w) to correct groupings to (b*t,w*h,c)
+#         grouped_x = rearrange(x, '(b t) c h w -> (b h w) t c', t=self.num_frames)
+
+#         # perform self-attention on the grouped_x
+#         q, k, v = self.to_q(grouped_x), self.to_k(grouped_x), self.to_v(grouped_x)
+#         attn_out = memory_efficient_attention(q, k, v)
+#         norm1_out = self.norm1(attn_out + grouped_x)
+#         ffn_out = self.ffn(norm1_out)
+#         attn_out = self.norm2(norm1_out + ffn_out)
+
+#         # rearrange out to be back into the grouped batch and timestep format
+#         attn_out = rearrange(attn_out, '(b h w) t c -> (b t) c h w', t=self.num_frames, h=h, w=w)
+
+#         # pass attention output through out projection
+#         attn_out = self.proj_out(attn_out)
+
+#         return attn_out + x
 
 # ReferenceConditionedAttentionBlock is an attention block which performs spatial and temporal attention
 class ReferenceConditionedAttentionBlock(nn.Module):
@@ -513,15 +513,18 @@ if __name__ == '__main__':
 
     num_channels_latent = 4
 
-    vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-mse")
+    vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-ema")
 
+    # reference_unet = UNet2DConditionModel.from_pretrained('/media/2TB/ani/animate-anyone/pretrained_models/sd-image-variations-diffusers',
+    #     subfolder="unet",
+    # ).to(dtype=torch.float16, device="cuda")
     # construct pipe from imag evariation diffuser
-    pipe = StableDiffusionImageVariationPipeline.from_pretrained("lambdalabs/sd-image-variations-diffusers", revision="v2.0", vae=vae).to(device)
+    pipe = StableDiffusionImageVariationPipeline.from_pretrained('/media/2TB/ani/animate-anyone/pretrained_models/sd-image-variations-diffusers', revision="v2.0", vae=vae).to(device)
     
     video_net = VideoNet(pipe.unet, num_frames=num_frames).to("cuda")
 
     # load mm pretrained weights from animatediff
-    load_mm(video_net, torch.load('../ckpts/v3_sd15_mm.ckpt'))
+    load_mm(video_net, torch.load('/media/2TB/stable-diffusion-webui/extensions/sd-webui-animatediff/model/v3_sd15_mm.ckpt'))
 
 
     # Create an optimized model with DepthwiseSeparableInflatedConv3d layers
@@ -529,11 +532,14 @@ if __name__ == '__main__':
 
     # Replace InflatedConv3d layers with DepthwiseSeparableInflatedConv3d layers
     for name, module in optimized_model.named_modules():
+        print(f"name:{name} layer:{module}")
+  
+            
         if isinstance(module, InflatedConv3d):
             inflated_conv3d_layer = getattr(video_net, name)
             depthwise_separable_conv3d_layer = DepthwiseSeparableInflatedConv3d(inflated_conv3d_layer)
             setattr(optimized_model, name, depthwise_separable_conv3d_layer)
-
-    # Save the checkpoint of the optimized model
+            print("replacing layer....")
+    # Save the checkpoint of the optimized model (5.5 gb)
     torch.save(video_net.state_dict(), "optimized.pth")
 
